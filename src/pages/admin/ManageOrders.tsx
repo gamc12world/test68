@@ -132,6 +132,51 @@ const ManageOrders: React.FC = () => {
     };
   }, []);
 
+  const handleStatusChange = async (orderId: string, newStatus: string) => {
+    setUpdating(orderId);
+    try {
+      // First update the order status in the database
+      const { error: updateError } = await supabase
+        .from('orders')
+        .update({ status: newStatus })
+        .eq('id', orderId);
+
+      if (updateError) throw updateError;
+
+      // Get the order details
+      const order = orders.find(o => o.id === orderId);
+      if (!order || !order.user?.email) {
+        throw new Error('Order or user email not found');
+      }
+
+      // Send email notification through edge function
+      try {
+        await supabase.functions.invoke('send-order-email', {
+          body: {
+            email: order.user.email,
+            orderNumber: order.id.slice(0, 8),
+            status: newStatus,
+            items: order.items,
+            total: order.total,
+            shippingAddress: order.shippingAddress,
+            customerName: order.user.name,
+            orderId: order.id
+          }
+        });
+      } catch (emailError) {
+        console.error('Error sending email notification:', emailError);
+        // Continue execution even if email fails
+      }
+
+      // Refresh the orders list
+      await fetchOrders();
+    } catch (error) {
+      console.error('Error updating order status:', error);
+    } finally {
+      setUpdating(null);
+    }
+  };
+
   // Filter orders
   const filteredOrders = orders.filter(order => {
     const matchesSearch = 
@@ -165,66 +210,6 @@ const ManageOrders: React.FC = () => {
     } else {
       setSortField(field);
       setSortDirection('desc');
-    }
-  };
-
-  const handleStatusChange = async (orderId: string, newStatus: string) => {
-    setUpdating(orderId);
-    try {
-      // First update the order status in the database
-      const { error: updateError } = await supabase
-        .from('orders')
-        .update({ status: newStatus })
-        .eq('id', orderId);
-
-      if (updateError) throw updateError;
-
-      // Refetch the specific order data to ensure we have the latest user email
-      const { data: refetchedOrder, error: fetchError } = await supabase
-        .from('orders')
-        .select('*, user: users(*), items: order_items(*)')
-        .eq('id', orderId)
-        .maybeSingle();
-
-      console.log(`Refetched order data for ${orderId}:`, refetchedOrder);
-      console.log(`Refetched user email for ${orderId}:`, refetchedOrder?.user?.email);
-      if (fetchError) console.error(`Error refetching order ${orderId}:`, fetchError);
-
-      if (fetchError) throw fetchError;
-
-      // Send email notification through edge function only if order and user email are found
-      if (!refetchedOrder || !refetchedOrder.user?.email) {
-        console.warn(`Skipping email notification for order ${orderId}: Order or user email not found after refetch.`);
-      } else {
-        try {
-          await supabase.functions.invoke('send-order-email', {
-            body: {
-              orderNumber: order.id.slice(0, 8),
-              status: newStatus,
-              items: order.items,
- total: refetchedOrder.total,
- shippingAddress: refetchedOrder.shippingAddress,
- customerName: refetchedOrder.user.name,
- orderId: refetchedOrder.id // Add orderId to the payload
-            }
-          });
-        } catch (emailError) {
-          console.error(`Error sending email notification for order ${orderId}:`, emailError);
-          // Continue execution even if email fails
-        }
-      }
-
-      // Update local state
-      if (viewingOrder?.id === orderId) {
-        setViewingOrder(prev => prev ? { ...prev, status: newStatus } : null);
-      }
-
-      // Refresh the orders list
-      await fetchOrders();
-    } catch (error) {
-      console.error('Error updating order status:', error);
-    } finally {
-      setUpdating(null);
     }
   };
 
@@ -545,3 +530,5 @@ const ManageOrders: React.FC = () => {
 };
 
 export default ManageOrders;
+
+export default ManageOrders
