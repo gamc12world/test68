@@ -530,5 +530,3 @@ const ManageOrders: React.FC = () => {
 };
 
 export default ManageOrders;
-
-export default ManageOrders
