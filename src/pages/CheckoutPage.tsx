@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useCart } from '../contexts/CartContext';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
+import stripePromise from '../lib/stripe';
 import { CreditCard, MapPin } from 'lucide-react';
 
 interface ShippingForm {
@@ -12,13 +13,6 @@ interface ShippingForm {
   state: string;
   postalCode: string;
   country: string;
-}
-
-interface PaymentForm {
-  cardNumber: string;
-  cardName: string;
-  expiry: string;
-  cvv: string;
 }
 
 const CheckoutPage: React.FC = () => {
@@ -39,16 +33,8 @@ const CheckoutPage: React.FC = () => {
     postalCode: '',
     country: 'USA',
   });
-  
-  const [payment, setPayment] = useState<PaymentForm>({
-    cardNumber: '',
-    cardName: '',
-    expiry: '',
-    cvv: '',
-  });
 
-  // Redirect if cart is empty or not logged in
-  React.useEffect(() => {
+  useEffect(() => {
     if (items.length === 0) {
       navigate('/cart');
     }
@@ -62,31 +48,56 @@ const CheckoutPage: React.FC = () => {
     setShipping(prev => ({ ...prev, [name]: value }));
   };
 
-  const handlePaymentChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const { name, value } = e.target;
-    setPayment(prev => ({ ...prev, [name]: value }));
-  };
-
   const handleShippingSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setStep('payment');
     window.scrollTo(0, 0);
   };
 
-  const handlePaymentSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsProcessing(true);
-    
+  const handlePayment = async () => {
     try {
-      // Create order in Supabase
+      setIsProcessing(true);
+
+      // Create a payment intent
+      const { data: paymentIntent, error: paymentError } = await supabase
+        .functions.invoke('create-payment-intent', {
+          body: {
+            amount: Math.round(totalAmount * 100), // Convert to cents
+            currency: 'usd',
+          },
+        });
+
+      if (paymentError) throw paymentError;
+
+      // Load Stripe
+      const stripe = await stripePromise;
+      if (!stripe) throw new Error('Stripe failed to load');
+
+      // Confirm the payment
+      const { error: stripeError } = await stripe.confirmCardPayment(paymentIntent.clientSecret, {
+        payment_method: {
+          card: {
+            // In a real implementation, you would use Stripe Elements
+            // This is just for demonstration
+            number: '4242424242424242',
+            exp_month: 12,
+            exp_year: 2024,
+            cvc: '123',
+          },
+        },
+      });
+
+      if (stripeError) throw stripeError;
+
+      // Create order in database
       const { data: order, error: orderError } = await supabase
         .from('orders')
         .insert({
           user_id: user!.id,
           total: totalAmount,
-          status: 'pending',
+          status: 'processing',
           shipping_address: shipping,
-          payment_method: 'Credit Card',
+          payment_method: 'stripe',
         })
         .select()
         .single();
@@ -113,14 +124,15 @@ const CheckoutPage: React.FC = () => {
       clearCart();
       navigate(`/order-confirmation/${order.id}`);
     } catch (error) {
-      console.error('Error creating order:', error);
-      alert('Failed to process order. Please try again.');
+      console.error('Payment failed:', error);
+      alert('Payment failed. Please try again.');
+    } finally {
       setIsProcessing(false);
     }
   };
 
   if (!user || items.length === 0) {
-    return null; // Will redirect in useEffect
+    return null;
   }
 
   return (
@@ -265,111 +277,38 @@ const CheckoutPage: React.FC = () => {
                 </form>
               </>
             ) : (
-              <>
+              <div className="bg-white rounded-lg shadow-sm p-6">
                 <h2 className="text-xl font-semibold mb-6">Payment Information</h2>
-                <form onSubmit={handlePaymentSubmit}>
-                  <div className="space-y-4">
-                    <div>
-                      <label htmlFor="cardNumber" className="block text-sm font-medium text-slate-700 mb-1">
-                        Card Number
-                      </label>
-                      <input
-                        type="text"
-                        id="cardNumber"
-                        name="cardNumber"
-                        placeholder="1234 5678 9012 3456"
-                        required
-                        className="input w-full"
-                        value={payment.cardNumber}
-                        onChange={handlePaymentChange}
-                      />
-                    </div>
-                    
-                    <div>
-                      <label htmlFor="cardName" className="block text-sm font-medium text-slate-700 mb-1">
-                        Name on Card
-                      </label>
-                      <input
-                        type="text"
-                        id="cardName"
-                        name="cardName"
-                        required
-                        className="input w-full"
-                        value={payment.cardName}
-                        onChange={handlePaymentChange}
-                      />
-                    </div>
-                    
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <label htmlFor="expiry" className="block text-sm font-medium text-slate-700 mb-1">
-                          Expiry Date
-                        </label>
-                        <input
-                          type="text"
-                          id="expiry"
-                          name="expiry"
-                          placeholder="MM/YY"
-                          required
-                          className="input w-full"
-                          value={payment.expiry}
-                          onChange={handlePaymentChange}
-                        />
-                      </div>
-                      
-                      <div>
-                        <label htmlFor="cvv" className="block text-sm font-medium text-slate-700 mb-1">
-                          CVV
-                        </label>
-                        <input
-                          type="text"
-                          id="cvv"
-                          name="cvv"
-                          placeholder="123"
-                          required
-                          className="input w-full"
-                          value={payment.cvv}
-                          onChange={handlePaymentChange}
-                        />
-                      </div>
-                    </div>
-                    
-                    <div className="border-t border-slate-200 mt-6 pt-6">
-                      <h3 className="font-medium mb-2">Billing Address</h3>
-                      <div className="flex items-center">
-                        <input
-                          type="checkbox"
-                          id="sameAsShipping"
-                          className="h-4 w-4 text-slate-900 focus:ring-slate-500 border-slate-300 rounded"
-                          defaultChecked
-                        />
-                        <label htmlFor="sameAsShipping" className="ml-2 block text-sm text-slate-700">
-                          Same as shipping address
-                        </label>
-                      </div>
-                    </div>
+                <div className="space-y-4">
+                  <div className="p-4 bg-slate-50 rounded-lg">
+                    <p className="text-sm text-slate-600">
+                      This is a test mode. Use these card details:
+                    </p>
+                    <ul className="mt-2 text-sm text-slate-600">
+                      <li>Card number: 4242 4242 4242 4242</li>
+                      <li>Expiry: Any future date</li>
+                      <li>CVC: Any 3 digits</li>
+                    </ul>
                   </div>
                   
-                  <div className="mt-8 space-y-3">
-                    <button 
-                      type="submit" 
-                      className="btn btn-primary w-full"
-                      disabled={isProcessing}
-                    >
-                      {isProcessing ? 'Processing...' : `Pay $${totalAmount.toFixed(2)}`}
-                    </button>
-                    
-                    <button 
-                      type="button" 
-                      className="btn btn-secondary w-full"
-                      onClick={() => setStep('shipping')}
-                      disabled={isProcessing}
-                    >
-                      Back to Shipping
-                    </button>
-                  </div>
-                </form>
-              </>
+                  <button 
+                    onClick={handlePayment}
+                    disabled={isProcessing}
+                    className="btn btn-primary w-full"
+                  >
+                    {isProcessing ? 'Processing...' : `Pay $${totalAmount.toFixed(2)}`}
+                  </button>
+                  
+                  <button 
+                    type="button"
+                    onClick={() => setStep('shipping')}
+                    disabled={isProcessing}
+                    className="btn btn-secondary w-full"
+                  >
+                    Back to Shipping
+                  </button>
+                </div>
+              </div>
             )}
           </div>
         </div>
